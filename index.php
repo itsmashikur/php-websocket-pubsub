@@ -40,15 +40,14 @@
         });
 
         socket.addEventListener('message', function(event) {
-
             console.log('message received');
-            
             const data = JSON.parse(event.data);
-            //set p tag
-            const p = document.createElement('p');
-            p.textContent = data.message;
-            document.getElementById('chat').appendChild(p);
 
+            const template = `
+                    <p><b>${data.channel}</b> : <i>${data.message}</i></p>
+            `;
+            document.getElementById('chat').innerHTML += template;
+        
         });
 
         // Connection closed
