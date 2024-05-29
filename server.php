@@ -23,7 +23,6 @@ class WebSocketServer implements MessageComponentInterface
 
     public function __construct($loop)
     {
-        $this->channel = 'messages';
 
         $this->host = '127.0.0.1';
 
@@ -33,7 +32,10 @@ class WebSocketServer implements MessageComponentInterface
 
         $this->redis = new Redis($loop);
 
-        $this->channelSubscribe($loop);
+        $this->subscribeAdmin();
+
+        $this->subscribeClient();
+
     }
 
     public function onOpen(ConnectionInterface $conn)
@@ -41,15 +43,37 @@ class WebSocketServer implements MessageComponentInterface
         $this->clients->attach($conn);
 
         echo "New connection! ({$conn->resourceId})" . PHP_EOL;
-        //send message to client
-        $conn->send('Hello from server!');
+
+        $res = [
+            'action' =>  'connection',
+            'message' => 'Connected to PubSub Socket Server!',
+        ];
+
+        $conn->send(json_encode($res));
     }
 
     public function onMessage(ConnectionInterface $from, $msg)
     {
-        //on message send to redis
-        $this->channelPublish($msg);
-        echo "Message {$from->resourceId} says: {$msg}" . PHP_EOL;
+        $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
+
+        $message = json_decode($msg, true);
+
+        $channel = $message['channel'];
+
+        //resource id
+        $redis->set($channel, $from->resourceId);
+
+        echo $from->resourceId;
+        
+        if ($message['action'] == 'publish' && !empty($message['destination'])) {
+            
+            $destination = $message['destination'];
+
+            $redis->publish($destination, $msg);
+
+        }elseif($message['action'] == 'publish' && empty($message['destination'])){
+            $redis->publish('admin-*', $msg);
+        }
     }
 
     public function onClose(ConnectionInterface $conn)
@@ -64,37 +88,45 @@ class WebSocketServer implements MessageComponentInterface
         $conn->close();
     }
 
-    public function channelSubscribe($loop)
+    public function subscribeAdmin()
     {
         $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
 
-        $redis->subscribe($this->channel)->then(
-            function () {
+        $channel = 'admin-*';
 
-                echo "Subscribed to channel : {$this->channel}" . PHP_EOL;
-
-            },
-            function (Exception $e) use ($redis) {
-                $redis->close();
-
-                echo 'Unable to subscribe: ' . $e->getMessage() . PHP_EOL;
-            },
-        );
-
-        $redis->on('message', function (string $channel, string $message) {
-
-            echo 'Message on test' . $channel . ': ' . $message . PHP_EOL;
-
-            foreach ($this->clients as $client) {
-                $client->send($message);
-            }
+        $redis->psubscribe($channel)->then(function () use ($channel) {
+            echo "Subscribed to channels matching '$channel'.\n";
         });
+        
+        $redis->on('pmessage', function ($pattern, $channel, $message) {
+            echo "Received message '$message' from channel '$channel' matching pattern '$pattern'.\n";
+        });
+
     }
 
-    public function channelPublish($msg)
-    {
+    public function subscribeClient()
+    {   
         $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
-        $redis->publish($this->channel, $msg);
+
+        $channel = 'client-*';
+
+        $redis->psubscribe($channel)->then(function () use ($channel) {
+            echo "Subscribed to channels matching '$channel'.\n";
+        });
+        
+        $redis->on('pmessage', function ($pattern, $channel, $message) {
+
+            $message = json_decode($message, true);
+
+            $destination = $message['destination'];
+
+            $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
+
+           $redis->get($destination)->then(function ($redis, $destination) use ($message) {
+               echo "Resource ID: " . $redis->get($destination) . "\n";
+           });
+
+        });
     }
 }
 
