@@ -1,0 +1,6 @@
+{
+    "require": {
+        "clue/redis-react": "^2.7",
+        "cboden/ratchet": "^0.4.4"
+    }
+}
