@@ -41,6 +41,9 @@
         });
 
         socket.addEventListener('message', function(event) {
+
+            console.log('message received');
+
             const data = JSON.parse(event.data);
             //set p tag
             const p = document.createElement('p');

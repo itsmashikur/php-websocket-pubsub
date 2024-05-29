@@ -15,11 +15,11 @@ require 'vendor/autoload.php';
 class WebSocketServer implements MessageComponentInterface
 {
     protected $clients;
-    protected $redis;
-    protected $predis;
     protected $host;
     protected $port;
-    protected $channel;
+    protected $redis;
+    protected $channels;
+
 
     public function __construct($loop)
     {
@@ -32,10 +32,14 @@ class WebSocketServer implements MessageComponentInterface
 
         $this->redis = new Redis($loop);
 
-        $this->subscribeAdmin();
+        $this->subscribe('client-*');
 
-        $this->subscribeClient();
+        $this->subscribe('admin-*');
 
+    }
+
+    private function redis(){
+        return $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
     }
 
     public function onOpen(ConnectionInterface $conn)
@@ -46,7 +50,7 @@ class WebSocketServer implements MessageComponentInterface
 
         $res = [
             'action' =>  'connection',
-            'message' => 'Connected to PubSub Socket Server!',
+            'message' => 'Connected to PubSub Socket Server! with resource ID: '. $conn->resourceId
         ];
 
         $conn->send(json_encode($res));
@@ -54,16 +58,15 @@ class WebSocketServer implements MessageComponentInterface
 
     public function onMessage(ConnectionInterface $from, $msg)
     {
-        $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
+        $redis = $this->redis();
 
         $message = json_decode($msg, true);
 
         $channel = $message['channel'];
 
-        //resource id
-        $redis->set($channel, $from->resourceId);
+        echo "Resource ID of Channel $channel set to : ". $from->resourceId ."\n";
 
-        echo $from->resourceId;
+        $redis->set($channel, $from->resourceId);
         
         if ($message['action'] == 'publish' && !empty($message['destination'])) {
             
@@ -72,7 +75,9 @@ class WebSocketServer implements MessageComponentInterface
             $redis->publish($destination, $msg);
 
         }elseif($message['action'] == 'publish' && empty($message['destination'])){
+
             $redis->publish('admin-*', $msg);
+
         }
     }
 
@@ -88,56 +93,44 @@ class WebSocketServer implements MessageComponentInterface
         $conn->close();
     }
 
-    public function subscribeAdmin()
+    public function subscribe($channelPattern)
     {
-        $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
+        $redis = $this->redis();
 
-        $channel = 'admin-*';
-
-        $redis->psubscribe($channel)->then(function () use ($channel) {
-            echo "Subscribed to channels matching '$channel'.\n";
-        });
-        
-        $redis->on('pmessage', function ($pattern, $channel, $message) {
-            echo "Received message '$message' from channel '$channel' matching pattern '$pattern'.\n";
+        $redis->psubscribe($channelPattern)->then(function () use ($channelPattern) {
+            echo "Subscribed to channels matching '$channelPattern'.\n";
         });
 
-    }
+        $redis->on('pmessage', function ($pattern, $channel, $msg) {
 
-    public function subscribeClient()
-    {   
-        $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
-
-        $channel = 'client-*';
-
-        $redis->psubscribe($channel)->then(function () use ($channel) {
-            echo "Subscribed to channels matching '$channel'.\n";
-        });
-        
-        $redis->on('pmessage', function ($pattern, $channel, $message) {
-
-            $message = json_decode($message, true);
-
+            $message = json_decode($msg, true);
+ 
             $destination = $message['destination'];
 
-            $redis = $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
+            foreach($this->clients as $client) {
 
-           $redis->get($destination)->then(function ($redis, $destination) use ($message) {
-               echo "Resource ID: " . $redis->get($destination) . "\n";
-           });
+                $redis = $this->redis();
 
+                $redis->get($destination)->then(function (string $resourceId) use ($client, $msg, $destination) {
+                    if ($client->resourceId == $resourceId) {
+                        echo "Resource ID {$resourceId} found of : ". $destination."\n";
+
+                        $client->send($msg);
+                    }
+                });
+            }
         });
     }
+
+   
 }
 
-
-$port = readline('Enter port: ');
 
 $loop = EventLoopFactory::create();
 
 $webSocket = new WebSocketServer($loop);
 
-$socketServer = new SocketServer('0.0.0.0:' . $port, $loop);
+$socketServer = new SocketServer('0.0.0.0:9090', $loop);
 
 $ioServer = new IoServer(new HttpServer(new WsServer($webSocket)), $socketServer, $loop);
 
