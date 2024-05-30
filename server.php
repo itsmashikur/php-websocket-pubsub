@@ -16,6 +16,7 @@ class PubSubServer implements MessageComponentInterface
     protected $clients;
     protected $hostPort;
     protected $data;
+    protected $redis;
 
     public function __construct($hostPort, $loop)
     {
@@ -23,16 +24,13 @@ class PubSubServer implements MessageComponentInterface
 
         $this->hostPort = $hostPort;
 
+        $this->data = [];
+
+        $this->redis = new RedisClient($this->hostPort);
+
         $this->patternSubscribe('client-*');
 
         $this->patternSubscribe('admin-*');
-
-        $this->data = [];
-    }
-
-    public function redisClient()
-    {
-        return new RedisClient($this->hostPort);
     }
 
     public function onOpen(ConnectionInterface $conn)
@@ -60,7 +58,7 @@ class PubSubServer implements MessageComponentInterface
         //if message has key 'receiver' then send message to user else send to all admins
         if ($msgArray['action'] == 'publish' && !empty($msgArray['receiver'])) {
             //publish to user
-            $this->redisClient()->publish($msgArray['receiver'], $msgJson);
+            $this->redis->publish($msgArray['receiver'], $msgJson);
 
         } elseif ($msgArray['action'] == 'publish' && empty($msgArray['receiver'])) {
             
@@ -73,7 +71,7 @@ class PubSubServer implements MessageComponentInterface
                     //there is no receiver of messages from users so we will set it to admins channel from this loop
                     $msgArray['receiver'] = $key;
                     //publish to admin
-                    $this->redisClient()->publish($key, json_encode($msgArray));
+                    $this->redis->publish($key, json_encode($msgArray));
                 }
             }
         }
@@ -98,7 +96,8 @@ class PubSubServer implements MessageComponentInterface
 
     public function patternSubscribe($channelPattern)
     {
-        $redis = $this->redisClient();
+
+        $redis = new RedisClient($this->hostPort);
 
         $redis->psubscribe($channelPattern);
 
