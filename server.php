@@ -8,34 +8,31 @@ use Ratchet\Server\IoServer;
 use Ratchet\Http\HttpServer;
 use Ratchet\WebSocket\WsServer;
 use React\EventLoop\Loop as EventLoop;
-use Clue\React\Redis\Factory as RedisFactory;
 use React\Socket\SocketServer;
+use Clue\React\Redis\RedisClient;
 
 class PubSubServer implements MessageComponentInterface
 {
     protected $clients;
     protected $hostPort;
-    protected $redis;
     protected $data;
 
     public function __construct($hostPort, $loop)
     {
         $this->clients = new \SplObjectStorage();
 
-        $this->redis = new RedisFactory($loop);
-
         $this->hostPort = $hostPort;
 
-        $this->patternSubscribe('client.5.*');
+        $this->patternSubscribe('client-*');
 
-        $this->patternSubscribe('admin.5.*');
+        $this->patternSubscribe('admin-*');
 
         $this->data = [];
     }
 
     public function redisClient()
     {
-        return $this->redis->createLazyClient("redis://{$this->hostPort}");
+        return new RedisClient($this->hostPort);
     }
 
     public function onOpen(ConnectionInterface $conn)
@@ -71,7 +68,7 @@ class PubSubServer implements MessageComponentInterface
             foreach ($this->data as $key => $value) {
 
                 //publish to only admin's channels from data
-                if (strpos($key, 'admin.') !== false) {
+                if (strpos($key, 'admin-') !== false) {
 
                     //there is no receiver of messages from users so we will set it to admins channel from this loop
                     $msgArray['receiver'] = $key;

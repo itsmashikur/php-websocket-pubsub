@@ -69,13 +69,13 @@
             event.preventDefault(); 
 
             const message = document.getElementById('messageInput').value;
-            const destination = document.getElementById('channelInput').value;
+            const receiver = document.getElementById('channelInput').value;
 
             // Send the message through the WebSocket
             socket.send(JSON.stringify({
                 action: 'publish',
                 channel: channel,
-                destination: destination,
+                receiver: receiver,
                 message: message
             }));
 
