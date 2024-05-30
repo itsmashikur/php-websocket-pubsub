@@ -1,46 +1,41 @@
 <?php
 
+require 'vendor/autoload.php';
+
 use Ratchet\MessageComponentInterface;
 use Ratchet\ConnectionInterface;
 use Ratchet\Server\IoServer;
 use Ratchet\Http\HttpServer;
 use Ratchet\WebSocket\WsServer;
-use React\EventLoop\Factory as EventLoopFactory;
-use Clue\React\Redis\Factory as Redis;
-use React\EventLoop\Loop;
-use React\Socket\Server as SocketServer;
+use React\EventLoop\Loop as EventLoop;
+use Clue\React\Redis\Factory as RedisFactory;
+use React\Socket\SocketServer;
 
-require 'vendor/autoload.php';
-
-class WebSocketServer implements MessageComponentInterface
+class PubSubServer implements MessageComponentInterface
 {
     protected $clients;
-    protected $host;
-    protected $port;
+    protected $hostPort;
     protected $redis;
     protected $data;
 
-    public function __construct($loop)
+    public function __construct($hostPort, $loop)
     {
-
-        $this->host = '127.0.0.1';
-
-        $this->port = 6379;
-
         $this->clients = new \SplObjectStorage();
 
-        $this->redis = new Redis($loop);
+        $this->redis = new RedisFactory($loop);
+
+        $this->hostPort = $hostPort;
+
+        $this->patternSubscribe('client.5.*');
+
+        $this->patternSubscribe('admin.5.*');
 
         $this->data = [];
-
-        $this->subscribe('client-*');
-
-        $this->subscribe('admin-*');
-
     }
 
-    private function redis(){
-        return $this->redis->createLazyClient("redis://{$this->host}:{$this->port}");
+    public function redisClient()
+    {
+        return $this->redis->createLazyClient("redis://{$this->hostPort}");
     }
 
     public function onOpen(ConnectionInterface $conn)
@@ -50,48 +45,40 @@ class WebSocketServer implements MessageComponentInterface
         echo "New connection! ({$conn->resourceId})" . PHP_EOL;
 
         $res = [
-            'channel' => "WebSocket Server",
-            'action' =>  'connection',
-            'message' => 'Connected to PubSub Socket Server!'
+            'channel' => 'WebSocket Server',
+            'action' => 'connection',
+            'message' => 'Connected to PubSub Socket Server!',
         ];
 
         $conn->send(json_encode($res));
     }
 
-    public function onMessage(ConnectionInterface $from, $msg)
+    public function onMessage(ConnectionInterface $from, $msgJson)
     {
-       
-        $message = json_decode($msg, true);
-        $channel = $message['channel'];
+        $msgArray = json_decode($msgJson, true);
 
-        echo "Resource ID of Channel $channel set to : ". $from->resourceId ."\n";
+        //set a item in data array with sender's channel as key & resource id as value
+        $this->setData($msgArray['channel'], $from->resourceId);
 
-        $this->setData($channel, $from->resourceId);
-        
-        if ($message['action'] == 'publish' && !empty($message['destination'])) {
+        //if message has key 'receiver' then send message to user else send to all admins
+        if ($msgArray['action'] == 'publish' && !empty($msgArray['receiver'])) {
+            //publish to user
+            $this->redisClient()->publish($msgArray['receiver'], $msgJson);
+
+        } elseif ($msgArray['action'] == 'publish' && empty($msgArray['receiver'])) {
             
-            $destination = $message['destination'];
+            //get all channels from data
+            foreach ($this->data as $key => $value) {
 
-            $msg = json_decode($msg, true);
-            $msg['sender'] = $message['channel'];
-            $msg = json_encode($msg);
+                //publish to only admin's channels from data
+                if (strpos($key, 'admin.') !== false) {
 
-            $this->redis()->publish($destination, $msg);
-
-        }elseif($message['action'] == 'publish' && empty($message['destination'])){
-
-            //send to all admins
-            foreach($this->data as $key => $value) {
-                if (strpos($key, 'admin-') !== false) {
-
-                    $msg = json_decode($msg, true);
-                    $msg['destination'] = $key;
-                    $msg = json_encode($msg);
-
-                    $this->redis()->publish($key, $msg);
+                    //there is no receiver of messages from users so we will set it to admins channel from this loop
+                    $msgArray['receiver'] = $key;
+                    //publish to admin
+                    $this->redisClient()->publish($key, json_encode($msgArray));
                 }
             }
-
         }
     }
 
@@ -112,58 +99,65 @@ class WebSocketServer implements MessageComponentInterface
         $conn->close();
     }
 
-    public function subscribe($channelPattern)
+    public function patternSubscribe($channelPattern)
     {
-        $redis = $this->redis();
+        $redis = $this->redisClient();
 
-        $redis->psubscribe($channelPattern)->then(function () use ($channelPattern) {
-            echo "Subscribed to channels matching '$channelPattern'.\n";
-        });
+        $redis->psubscribe($channelPattern);
 
-        $redis->on('pmessage', function ($pattern, $channel, $msg) {
+        $redis->on('pmessage', function ($pattern, $channel, $msgJson) {
 
-            $message = json_decode($msg, true);
- 
-            $destination = $message['destination'];
+            $msgArray = json_decode($msgJson, true);
 
-            foreach($this->clients as $client) {
+            //get all connected clients
+            foreach ($this->clients as $client) {
 
-                $resourceId = $this->getData($destination);
+                $receiverResourceId = $this->getData($msgArray['receiver']);
 
-                if ($client->resourceId == $resourceId) {
-                    echo "Resource ID {$resourceId} found of : ". $destination."\n";
-                    $client->send($msg);
+                $senderResourceId   = $this->getData($msgArray['channel']);
+
+                //send sender's message to sender and receiver
+                if ($client->resourceId == $senderResourceId || $client->resourceId == $receiverResourceId) {
+                    
+                    $client->send($msgJson);
                 }
             }
         });
     }
 
-    public function setData($key, $value){
+    public function setData($key, $value)
+    {
         $this->data[$key] = $value;
     }
 
-    public function getData($key){
-        return $this->data[$key] ? : null;
+    public function getData($key)
+    {
+        return $this->data[$key] ?: null;
     }
 
-    public function unsetData($key){
+    public function unsetData($key)
+    {
         unset($this->data[$key]);
     }
 
-
-    //get key of array using value
     public function getKey($value)
     {
         return array_search($value, $this->data, true);
     }
 }
 
-$loop = EventLoopFactory::create();
+$pubsub = '127.0.0.1:6379';
+$socket = '127.0.0.1:9090';
 
-$webSocket = new WebSocketServer($loop);
+$loop = EventLoop::get();
 
-$socketServer = new SocketServer('0.0.0.0:9090', $loop);
+$pubSubServer = new PubSubServer($pubsub, $loop);
+$socketServer = new SocketServer($socket, [], $loop);
 
-$ioServer = new IoServer(new HttpServer(new WsServer($webSocket)), $socketServer, $loop);
+$ioServer = new IoServer(
+    new HttpServer(new WsServer($pubSubServer)), $socketServer, $loop
+);
+
+echo "WebSocket Socket Server has started on $socket" . PHP_EOL;
 
 $loop->run();
